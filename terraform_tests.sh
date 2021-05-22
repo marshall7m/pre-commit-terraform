@@ -6,7 +6,7 @@ set -e
 declare -a paths
 
 function infer_binary {
-    local -r 
+    local -r
 
     if ls ${path}/*.hcl &>/dev/null; then
         echo "terragrunt"
@@ -58,23 +58,23 @@ done
 # gets changed tf module dependencies
 index=0
 target_tests=()
-for test_filepath in $(find tests/ -name '*.tf' -or -name '*.hcl'); do
+for test_filepath in $(find tests/ -type d \( -name .terragrunt-cache -o -name .terraform \) -prune -false -o -name '*.hcl' -or -name '*.tf'); do
     logger "Checking test file: ${test_filepath}"  "DEBUG"
     test_dir=$(dirname $test_filepath)
+    rel_paths=()
     for path_uniq in $(echo "${paths[*]}" | tr ' ' '\n' | sort -u); do
         # gets unique paths within `paths`
         path_uniq="${path_uniq//__REPLACED__SPACE__/ }"
         logger "test path: ${test_dir}" "DEBUG"
         logger "target path ${path_uniq}" "DEBUG"
-        rel_paths[index]=$(realpath --relative-to=${test_dir} ${path_uniq})
-        let "index+=1"
+        rel_paths+=$(realpath --relative-to=${test_dir} ${path_uniq})
     done
     logger "Test relative path list: ${rel_paths[@]}" "DEBUG"
-    
+
     if egrep -l "${rel_paths[@]}" $test_filepath; then
         pushd "$test_dir" > /dev/null
         binary=$(infer_binary $test_dir) || exit
-        
+
         $binary test
 
         #rm path from dir stack

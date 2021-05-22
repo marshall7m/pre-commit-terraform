@@ -1,4 +1,4 @@
-  
+
 - id: terraform_tests
   name: Terraform tests
   description: Runs `terraform test` on tests defined under the`tests/` directory.
