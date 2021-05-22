@@ -1,0 +1,8 @@
+  
+- id: terraform_tests
+  name: Terraform tests
+  description: Runs `terraform test` on tests defined under the`tests/` directory.
+  entry: terraform_tests.sh
+  language: script
+  files: (\.tf|\.tfvars)$
+  exclude: \.terraform\/.*$
