@@ -59,28 +59,37 @@ done
 uniq_dirs=$(echo "${paths[*]}" | tr ' ' '\n' | sort -u)
 
 for test_filepath in $(find tests/ -type d \( -name .terragrunt-cache -o -name .terraform \) -prune -false -o -name '*.hcl' -or -name '*.tf'); do
+    test_file_changed=false
     logger "Checking test file: ${test_filepath}"  "DEBUG"
     test_dir=$(dirname $test_filepath)
     rel_paths=()
     for dir in ${uniq_dirs[@]}; do
-        logger "test path: ${test_dir}" "DEBUG"
+        logger "test directory: ${test_dir}" "DEBUG"
         logger "target directory: ${dir}" "DEBUG"
         # gets relative path of the test directory to the target paths
         rel_path=\"$(realpath --relative-to=${test_dir} ${dir})\"
+
+        if [ "${rel_path}" = \".\" ]; then test_file_changed=true && break; fi
+        logger "relative path: ${rel_path}" "DEBUG"
+
         #for every relative path added after the first path, add `|` to represent OR for egrep
         if [ ${#rel_paths[@]} -eq 0 ]; then
             rel_paths+="${rel_path}"
         else
             rel_paths+="|${rel_path}"
         fi
+
         # get relative path with `//` instead of `/` for last directory within directory path
         # used to allow egrep to match tf module sources that use double slashes
         double_slash_path=$(echo "${rel_path}" | sed 's/\(.*\)\//\1\/\//')
         rel_paths+="|${double_slash_path}"
     done
-    logger "Test relative path list: ${rel_paths[@]}" "DEBUG"
 
-    if egrep -l "${rel_paths[@]}" $test_filepath; then
+    logger "relative path list: ${rel_paths[@]}" "DEBUG"
+
+    #if the actual test file has changed, no filepath arguments were passed to compute relative path, or relative path is not within test file
+    if [ ${test_file_changed} = true ] || [ ! ${#rel_paths[@]} -ne 0 ] || egrep -l "${rel_paths[@]}" $test_filepath; then
+
         echo "A dependency within test file: ${test_filepath} has changed"
 
         pushd "$test_dir" > /dev/null
