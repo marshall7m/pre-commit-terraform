@@ -3,8 +3,6 @@
 set -e
 
 
-declare -a paths
-
 function infer_binary {
     local -r
 
@@ -46,63 +44,61 @@ logger() {
 
 
 
-index=0
-# gets directory names of filepath arguments
+modified_dir=()
 for filepath in "$@"; do
   filepath="${filepath// /__REPLACED__SPACE__}"
-  #gets dir of filepath
-  paths[index]=$(dirname "$filepath")
-  let "index+=1"
+  modified_dir+=$(dirname "$filepath")
 done
 
 # gets unique directory names
-uniq_dirs=$(echo "${paths[*]}" | tr ' ' '\n' | sort -u)
+modified_dir=$(echo "${modified_dir[*]}" | tr ' ' '\n' | sort -u)
 
-for test_filepath in $(find tests/ -type d \( -name .terragrunt-cache -o -name .terraform \) -prune -false -o -name '*.hcl' -or -name '*.tf'); do
-    test_file_changed=false
-    logger "Checking test file: ${test_filepath}"  "DEBUG"
-    test_dir=$(dirname $test_filepath)
+tf_dirs=()
+for filepath in $(find ./ -type d \( -name .terragrunt-cache -o -name .terraform \) -prune -false -o -name '*.hcl' -or -name '*.tf'); do
+    #trim extra slashes
+    filepath=$(echo "${filepath// /__REPLACED__SPACE__}" | tr -s /)
+    tf_dirs+="$(dirname $filepath) "
+done
+
+declare -a tf_dirs=$(echo $tf_dirs | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
+for tf_dir in $tf_dirs; do
+    logger "terraform directory: ${tf_dir}" "DEBUG"
+    cd $tf_dir
+    # loads/updates terraform module sources to `.terraform/`
+    terraform get -update
+    # parse modules.json to get module source paths
+
+    module_dep_paths=$(python -c "import json; print([module['Dir'] for module in [json.loads(line) for line in open('.terraform/modules/modules.json', 'r').read().split('\n')][0]['Modules']])")
+    logger "Module dependency sources:" "DEBUG"
+    logger "${module_dep_paths}" "DEBUG"
+
     rel_paths=()
-    for dir in ${uniq_dirs[@]}; do
-        logger "test directory: ${test_dir}" "DEBUG"
-        logger "target directory: ${dir}" "DEBUG"
-        # gets relative path of the test directory to the target paths
-        rel_path=\"$(realpath --relative-to=${test_dir} ${dir})\"
-
-        if [ "${rel_path}" = \".\" ]; then test_file_changed=true && break; fi
-        logger "relative path: ${rel_path}" "DEBUG"
-
-        #for every relative path added after the first path, add `|` to represent OR for egrep
-        if [ ${#rel_paths[@]} -eq 0 ]; then
-            rel_paths+="${rel_path}"
-        else
-            rel_paths+="|${rel_path}"
-        fi
-
-        # get relative path with `//` instead of `/` for last directory within directory path
-        # used to allow egrep to match tf module sources that use double slashes
-        double_slash_path=$(echo "${rel_path}" | sed 's/\(.*\)\//\1\/\//')
-        rel_paths+="|${double_slash_path}"
+    for dir in ${modified_dir[@]}; do
+        logger "modified directory: ${modified_dir}" "DEBUG"
+        # gets relative path of the terraform directory to the modified paths
+        rel_paths+=$(realpath --relative-to=${tf_dir} ${modified_dir})
     done
 
     logger "relative path list: ${rel_paths[@]}" "DEBUG"
 
-    #if the actual test file has changed, no filepath arguments were passed to compute relative path, or relative path is not within test file
-    if [ ${test_file_changed} = true ] || [ ! ${#rel_paths[@]} -ne 0 ] || egrep -l "${rel_paths[@]}" $test_filepath; then
+    for path in "${rel_paths[@]}"; do
+        if [[ " ${module_dep_paths[@]} " =~ " ${path} " ]]; then
+            echo "A module dependency within directory: ${tf_dir} has changed"
 
-        echo "A dependency within test file: ${test_filepath} has changed"
+            binary=$(infer_binary ".") || exit
+            logger "Inferred binary: ${binary}" "INFO"
 
-        pushd "$test_dir" > /dev/null
-        binary=$(infer_binary ".") || exit
-        logger "Inferred binary: ${binary}" "INFO"
+            cmd="${binary} test"
+            echo "Running command: '${cmd}' within the directory: ${tf_dir}"
+            $cmd
+            #rm path from dir stack
+            cd - > /dev/null
+            break
+        fi
+    done
 
-        cmd="${binary} test"
-        echo "Running command: '${cmd}' within the directory: ${test_dir}"
-        $cmd
+    # if no modified files were passed as arguments or relative path is a module source path
+    # if [ ! ${#rel_paths[@]} -ne 0 ] || [ ${modified_dep} = true ]; then
 
-        #rm path from dir stack
-        popd > /dev/null
-    else
-        echo "Skipping test directory: $test_dir"
-    fi
 done
