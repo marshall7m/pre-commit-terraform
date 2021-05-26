@@ -43,62 +43,94 @@ logger() {
 }
 
 
-
-modified_dir=()
-for filepath in "$@"; do
-  filepath="${filepath// /__REPLACED__SPACE__}"
-  modified_dir+=$(dirname "$filepath")
-done
+modified_dirs=()
+if [ ${#@} -ne 0 ]; then
+    for filepath in "$@"; do
+        filepath="${filepath// /__REPLACED__SPACE__}"
+        # gets abs path of modified directory
+        modified_dirs+=$(cd $(dirname "$filepath") && pwd && cd - > /dev/null)
+    done
+else
+    echo "No filepath arguments were passed"
+    exit 1
+fi
 
 # gets unique directory names
-modified_dir=$(echo "${modified_dir[*]}" | tr ' ' '\n' | sort -u)
+modified_dirs=$(echo "${modified_dirs[*]}" | tr ' ' '\n' | sort -u)
 
-tf_dirs=()
-for filepath in $(find ./ -type d \( -name .terragrunt-cache -o -name .terraform \) -prune -false -o -name '*.hcl' -or -name '*.tf'); do
+test_dirs=()
+# gets directory paths within `tests/` that contain .tf or .hcl files
+for filepath in $(find tests/ -type d \( -name .terragrunt-cache -o -name .terraform \) -prune -false -o -name '*.hcl' -or -name '*.tf'); do
     #trim extra slashes
     filepath=$(echo "${filepath// /__REPLACED__SPACE__}" | tr -s /)
-    tf_dirs+="$(dirname $filepath) "
+    test_dirs+="$(dirname $filepath) "
 done
 
-declare -a tf_dirs=$(echo $tf_dirs | tr ' ' '\n' | sort -u | tr '\n' ' ')
+# get unique directories
+declare -a test_dirs=$(echo $test_dirs | tr ' ' '\n' | sort -u | tr '\n' ' ')
 
-for tf_dir in $tf_dirs; do
-    logger "terraform directory: ${tf_dir}" "DEBUG"
-    cd $tf_dir
+for tf_dir in $test_dirs; do
+    echo
+    echo "before pwd: "
+    pwd
+    cd "$tf_dir" > /dev/null
+    binary=$(infer_binary ".") || exit
+    logger "Inferred binary: ${binary}" "INFO"
+    logger "${binary} directory: ${tf_dir}" "DEBUG"
+
+    #TODO: rm once fixed:
+
+    if [ "${binary}" == "terragrunt" ]; then
+        #TODO: Figure out why this doesn't work `cd $(terragrunt terragrunt-info | jq .WorkingDir)`
+        tg_cache_dir=$(terragrunt terragrunt-info | jq .WorkingDir)
+        #TODO figure out why can't cd into $tg_cache_dir
+        cd $tg_cache_dir
+
+        # loads/updates terraform module sources to `.terraform/`
+        terraform get -update
+        # parse modules.json to get module source paths
+        module_dep_paths=$(python -c "import json; print(str({module['Dir'] for module in [json.loads(line) for line in open('.terraform/modules/modules.json', 'r').read().split('\n')][0]['Modules']}).replace('{', '').replace('}', '').replace(\"'\", '').replace(',', ''))")
+
+        cd - > /dev/null
+    else
+        terraform get -update
+        # parse modules.json to get module source paths
+        module_dep_paths=$(python -c "import json; print(str({module['Dir'] for module in [json.loads(line) for line in open('.terraform/modules/modules.json', 'r').read().split('\n')][0]['Modules']}).replace('{', '').replace('}', '').replace(\"'\", '').replace(',', ''))")
+    fi
+
     # loads/updates terraform module sources to `.terraform/`
     terraform get -update
     # parse modules.json to get module source paths
+    module_dep_paths=$(python -c "import json; print(str({module['Dir'] for module in [json.loads(line) for line in open('.terraform/modules/modules.json', 'r').read().split('\n')][0]['Modules']}).replace('{', '').replace('}', '').replace(\"'\", '').replace(',', ''))")
 
-    module_dep_paths=$(python -c "import json; print([module['Dir'] for module in [json.loads(line) for line in open('.terraform/modules/modules.json', 'r').read().split('\n')][0]['Modules']])")
+
     logger "Module dependency sources:" "DEBUG"
     logger "${module_dep_paths}" "DEBUG"
 
     rel_paths=()
-    for dir in ${modified_dir[@]}; do
-        logger "modified directory: ${modified_dir}" "DEBUG"
+    for dir in ${modified_dirs[@]}; do
+        logger "modified directory path: ${dir}" "DEBUG"
         # gets relative path of the terraform directory to the modified paths
-        rel_paths+=$(realpath --relative-to=${tf_dir} ${modified_dir})
+        rel_paths+=$(realpath --relative-to=${PWD} ${dir})
     done
 
     logger "relative path list: ${rel_paths[@]}" "DEBUG"
 
-    for path in "${rel_paths[@]}"; do
-        if [[ " ${module_dep_paths[@]} " =~ " ${path} " ]]; then
+    for i in "${!rel_paths[@]}"; do
+        if [[ " ${module_dep_paths[@]} " =~ " ${rel_paths[$i]} " ]]; then
             echo "A module dependency within directory: ${tf_dir} has changed"
-
-            binary=$(infer_binary ".") || exit
-            logger "Inferred binary: ${binary}" "INFO"
 
             cmd="${binary} test"
             echo "Running command: '${cmd}' within the directory: ${tf_dir}"
             $cmd
-            #rm path from dir stack
-            cd - > /dev/null
             break
+        fi
+
+        if [[ "${i+1}" ==  ${#rel_paths[@]} ]]; then
+            echo "Skipping command: '${cmd}' within the directory: ${tf_dir}"
         fi
     done
 
-    # if no modified files were passed as arguments or relative path is a module source path
-    # if [ ! ${#rel_paths[@]} -ne 0 ] || [ ${modified_dep} = true ]; then
+    cd - > /dev/null
 
 done
