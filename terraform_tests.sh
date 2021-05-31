@@ -80,13 +80,14 @@ for tf_dir in $test_dirs; do
     if [ "${binary}" == "terragrunt" ]; then
         # get local terraform module source path from terragrunt file to list
         tg_dep_path=$(grep -Pzo 'terraform\s+\{(\s+.+)+source\s+=\s+\"\K(\.\.\/+)+.+(?=\"\s+\})' terragrunt.hcl |  sed 's/\/\//\//g')
-
-        # create tmp tf module file that uses the tg source path
-        cat <<EOF > tmp.tf
+        if [[ -n ${tg_dep_path} ]]; then
+            # create tmp tf module file that uses the tg source path
+            cat <<EOF > tmp.tf
 module "test" {
     source = "${tg_dep_path}"
 }
 EOF
+        fi
     fi
 
     # loads/updates terraform module sources to `.terraform/`
@@ -96,7 +97,7 @@ EOF
     logger "Module dependency sources:" "DEBUG"
     logger "${module_dep_paths}" "DEBUG"
 
-    if [ "${binary}" == "terragrunt" ]; then
+    if [ "${binary}" == "terragrunt" ] && [ -f "tmp.tf" ] ; then
         #clean up .tf files before running terragrunt cmd
         rm tmp.tf
     fi
